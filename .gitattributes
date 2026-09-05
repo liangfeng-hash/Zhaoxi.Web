@@ -1,0 +1,16 @@
+# Windows 的 core.autocrlf=true 会把检出的文件转成 CRLF，
+# 而 Prettier 默认 endOfLine=lf，两者打架会导致 lint 满屏 "Delete ␍"。
+# 这里强制前端源码在存储和检出时都用 LF。
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.svg  text eol=lf
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary

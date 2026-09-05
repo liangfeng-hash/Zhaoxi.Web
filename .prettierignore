@@ -1,0 +1,5 @@
+dist
+Vue_dist
+node_modules
+public
+*.min.js
