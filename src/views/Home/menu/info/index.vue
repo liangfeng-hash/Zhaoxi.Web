@@ -436,7 +436,7 @@ let subMenuForm = async (uform) => {
 //弹出编辑菜单窗口
 const EditMenu = async (menuid) => {
   {
-    var reponse = await axios.get(`/Menu/GetMenusTreeSelectList/${menuid}`);
+    let reponse = await axios.get(`/Menu/GetMenusTreeSelectList/${menuid}`);
     let { data, success, message } = reponse.data;
     if (success) {
       menutreedatalist.value = data;
@@ -447,7 +447,7 @@ const EditMenu = async (menuid) => {
   }
 
   {
-    var reponse = await axios.get(`/Menu/GetMenuById/${menuid}`);
+    let reponse = await axios.get(`/Menu/GetMenuById/${menuid}`);
     let { success, data } = reponse.data;
     if (success) {
       menuForm.value = data;
