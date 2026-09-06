@@ -1,7 +1,20 @@
 name: 部署到本机
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+    # 前端文件类型多，用反列更稳：默认全触发，只排除确定不影响产物的
+    # （正列容易漏 —— 漏了就永远不触发，且不报错）
+    paths-ignore:
+      - 'README.md'
+      - '**/*.md'
+      - '.vscode/**'
+      - 'Dockerfile'            # Linux 容器部署用，跟 IIS 这条线无关
+      - 'nginx.conf'            # 同上
+      - '.gitignore'
+      - '.gitattributes'
+      - '.prettierignore'
+  workflow_dispatch:      # 保留手动触发，排障时有用
 
 concurrency:
   group: deploy-local-web
