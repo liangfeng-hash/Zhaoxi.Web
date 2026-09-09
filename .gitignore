@@ -26,3 +26,6 @@ dist-ssr
 # 本地环境覆盖，不提交
 .env.local
 .env.*.local
+
+# self-hosted runner 本体，不进仓库
+actions-runner/

@@ -1,0 +1,133 @@
+name: 部署到 linux-C
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - '**/*.md'
+      - '.vscode/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - '.prettierignore'
+  workflow_dispatch:        # 保留手动触发，排障时用
+
+concurrency:
+  group: deploy-linux-web
+  cancel-in-progress: false   # 部署不可中断，排队执行
+
+env:
+  RELEASES: /var/www/releases
+  LINK:     /var/www/vue
+  KEEP:     5                 # 保留最近几个版本
+  HOSTNAME_: fengyuan.online  # 验证时带的 Host 头
+
+jobs:
+  # ══════════════════════════════════════════════
+  # 构建：跑在 GitHub 云端，不占服务器资源
+  # ══════════════════════════════════════════════
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'          # 缓存 ~/.npm，二次构建快很多
+
+      - name: 安装依赖
+        run: npm ci             # 严格按 lock 文件，结果可复现
+
+      - name: 代码检查
+        run: npm run lint:check # CI 闸门：不过就不发布
+
+      - name: 构建
+        run: npm run build
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.run_number }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ══════════════════════════════════════════════
+  # 部署：跑在 linux-C 的自建 runner 上
+  # 不做 checkout —— 只需要产物，省掉 25KB/s 的 clone
+  # ══════════════════════════════════════════════
+  deploy:
+    needs: build
+    runs-on: [self-hosted, linux-c]
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.run_number }}
+          path: dist
+
+      - name: 计算版本号并记录当前版本
+        run: |
+          set -euo pipefail
+          echo "REL=${RELEASES}/${{ github.run_number }}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "PREV=$(readlink -f "$LINK" || echo '')" >> "$GITHUB_ENV"
+
+      - name: 落地到新版本目录
+        run: |
+          set -euo pipefail
+          rm -rf "$REL"
+          mkdir -p "$REL"
+          cp -a dist/. "$REL/"
+          chmod -R a+rX "$REL"          # 保证 www-data 读得到
+          test -f "$REL/index.html"     # 产物完整性兜底
+
+      - name: 原子切换
+        run: |
+          set -euo pipefail
+          # ln -sfn 本身是 unlink+symlink（非原子），
+          # 先建临时链再用 mv -T（rename(2)）替换才真正原子
+          ln -sfn "$REL" /var/www/.vue.new
+          mv -Tf /var/www/.vue.new "$LINK"
+          ls -l "$LINK"
+
+      - name: 验证
+        run: |
+          set -euo pipefail
+          code=$(curl -sk -o /tmp/idx.html -w '%{http_code}' \
+                 -H "Host: ${HOSTNAME_}" https://127.0.0.1/)
+          [ "$code" = "200" ] || { echo "❌ 首页返回 $code"; exit 1; }
+          grep -q '<div id="app">' /tmp/idx.html \
+            || { echo "❌ 页面内容异常"; exit 1; }
+
+          asset=$(grep -oP '(?<=src=")/assets/[^"]+\.js' /tmp/idx.html | head -1)
+          [ -n "$asset" ] || { echo "❌ index.html 里找不到 assets 引用"; exit 1; }
+          acode=$(curl -sk -o /dev/null -w '%{http_code}' \
+                  -H "Host: ${HOSTNAME_}" "https://127.0.0.1${asset}")
+          [ "$acode" = "200" ] || { echo "❌ 静态资源 $asset 返回 $acode"; exit 1; }
+
+          echo "✅ 首页 200、内容正常、静态资源 $asset 可达"
+
+      - name: 失败自动回滚
+        if: failure()
+        run: |
+          set -euo pipefail
+          if [ -n "${PREV:-}" ] && [ -d "$PREV" ]; then
+            ln -sfn "$PREV" /var/www/.vue.new
+            mv -Tf /var/www/.vue.new "$LINK"
+            echo "⚠️ 已回滚到 $PREV"
+          else
+            echo "⚠️ 无可回滚版本，需人工介入"
+          fi
+
+      - name: 清理旧版本
+        if: success()
+        run: |
+          set -euo pipefail
+          cur=$(readlink -f "$LINK")
+          ls -1dt "$RELEASES"/*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r d; do
+            [ "$(readlink -f "$d")" = "$cur" ] && continue    # 绝不删当前版本
+            rm -rf "$d" && echo "已清理 $d"
+          done
+          echo "当前保留："
+          ls -1dt "$RELEASES"/*/ | head -n "$KEEP"
