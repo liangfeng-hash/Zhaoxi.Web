@@ -80,6 +80,8 @@ jobs:
           mkdir -p "$REL"
           cp -a dist/. "$REL/"
           chmod -R a+rX "$REL"          # 保证 www-data 读得到
+          touch "$REL"                  # cp -a 会把 artifact 的旧时间戳带到目录上，
+                                        # 覆写成部署时刻，否则 ls -t 排序失效
           test -f "$REL/index.html"     # 产物完整性兜底
 
       - name: 原子切换
@@ -125,9 +127,14 @@ jobs:
         run: |
           set -euo pipefail
           cur=$(readlink -f "$LINK")
-          ls -1dt "$RELEASES"/*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r d; do
-            [ "$(readlink -f "$d")" = "$cur" ] && continue    # 绝不删当前版本
-            rm -rf "$d" && echo "已清理 $d"
-          done
+          # 按目录名里的 run_number 数字倒序，不用 ls -t：
+          # 时间戳会因 cp -a / 重跑而失真，run_number 才是可靠的版本序
+          # sort -V 保证 10 排在 3 之前（普通字典序会排反）
+          # 排除 0-initial：接入流水线之前的原始站点，永久保底
+          ls -1d "$RELEASES"/*/ 2>/dev/null | grep -v '/0-initial/$' | sort -t/ -k5 -Vr \
+            | tail -n +$((KEEP + 1)) | while read -r d; do
+                [ "$(readlink -f "$d")" = "$cur" ] && continue    # 绝不删当前版本
+                rm -rf "$d" && echo "已清理 $d"
+              done
           echo "当前保留："
-          ls -1dt "$RELEASES"/*/ | head -n "$KEEP"
+          ls -1d "$RELEASES"/*/ | sort -t/ -k5 -Vr | head -n "$KEEP"
