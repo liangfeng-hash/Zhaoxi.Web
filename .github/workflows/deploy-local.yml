@@ -55,6 +55,10 @@ jobs:
 
       - name: 备份当前站点
         shell: pwsh
+        # 备份位置：C:\deploy-backup\web\<时间戳>\
+        #   · 备的是网关 wwwroot 里的前端产物，不含网关本身（网关有自己的备份步骤）
+        #   · 时间戳格式 yyyyMMdd-HHmmss，只保留最近 5 份
+        # 恢复：直接重跑本 workflow 更快 —— 前端产物本就是构建出来的
         run: |
           $dest = Join-Path $env:BACKUP_ROOT "web\$(Get-Date -Format 'yyyyMMdd-HHmmss')"
           # 备的是 wwwroot 里的前端产物，不含网关本身（网关有自己的备份步骤）
