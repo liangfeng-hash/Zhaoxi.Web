@@ -1,5 +1,12 @@
 name: 部署到 linux-C
 
+# Actions 列表里这一行的标题。不写的话默认用 commit message，
+# 而 tag 的 -m 说明不在 push 事件 payload 里，GitHub 取不到
+run-name: >-
+  ${{ github.ref_type == 'tag'
+      && format('发布 {0}', github.ref_name)
+      || format('手动构建 @ {0}', github.ref_name) }}
+
 on:
   push:
     # ── 只有打 tag 才触发，推分支不跑这条流水线 ──
@@ -33,6 +40,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true      # 要读 tag 的 -m 说明，必须把 tag 对象拉下来
+          fetch-depth: 0        # fetch-tags 需要完整历史配合
+
+      - name: 记录发布说明
+        if: github.ref_type == 'tag'
+        continue-on-error: true   # 拿不到说明不该让发布失败
+        run: |
+          msg=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" 2>/dev/null || true)
+          [ -n "$msg" ] || msg="(该 tag 没有附注说明)"
+          {
+            echo "## 发布 $GITHUB_REF_NAME"
+            echo
+            echo "$msg"
+            echo
+            echo "提交：\`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
