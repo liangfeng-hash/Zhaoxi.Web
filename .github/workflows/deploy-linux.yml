@@ -2,15 +2,18 @@ name: 部署到 linux-C
 
 on:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - 'README.md'
-      - '**/*.md'
-      - '.vscode/**'
-      - '.gitignore'
-      - '.gitattributes'
-      - '.prettierignore'
-  workflow_dispatch:        # 保留手动触发，排障时用
+    # ── 只有打 tag 才触发，推分支不跑这条流水线 ──
+    #    发布是一个明确动作，日常提交不会碰生产
+    #    lint 在 build job 里，随 tag 构建一起执行；lint 不过 → deploy 不启动
+    #    注：tag 推送不受 paths 过滤影响（GitHub 对 tag 跳过路径过滤），
+    #        所以这里不需要写 paths-ignore
+    tags: [ 'v*' ]
+  workflow_dispatch:        # 手动触发，排障或补发时用
+    inputs:
+      deploy:
+        description: '构建后同时部署到 linux-C'
+        type: boolean
+        default: true
 
 concurrency:
   group: deploy-linux-web
@@ -59,6 +62,8 @@ jobs:
   # ══════════════════════════════════════════════
   deploy:
     needs: build
+    # 手动触发时可以只构建不部署（取消勾选 deploy）；tag 触发一律发布
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.deploy)
     runs-on: [self-hosted, linux-c]
     steps:
       - name: 下载产物
@@ -70,7 +75,14 @@ jobs:
       - name: 计算版本号并记录当前版本
         run: |
           set -euo pipefail
-          echo "REL=${RELEASES}/${{ github.run_number }}-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          # tag 触发时目录名用 tag（4-v1.0.0），手动触发时用短 sha（5-a1b2c3d）
+          # run_number 始终在最前面，保证清理时的排序可靠
+          TAG="${GITHUB_REF#refs/tags/}"
+          # 注意：这里必须用 if，不能写成 [ ... ] && TAG=...
+          # set -e 下条件为假会让整条语句返回 1，直接终止脚本
+          if [ "$TAG" = "$GITHUB_REF" ]; then TAG="${GITHUB_SHA::7}"; fi
+          TAG="${TAG//\//-}"          # tag 里若含 / 会拆出子目录，替换成 -
+          echo "REL=${RELEASES}/${{ github.run_number }}-${TAG}" >> "$GITHUB_ENV"
           echo "PREV=$(readlink -f "$LINK" || echo '')" >> "$GITHUB_ENV"
 
       - name: 落地到新版本目录
