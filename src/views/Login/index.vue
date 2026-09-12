@@ -3,7 +3,7 @@
       <div class="login-content">
          <!-- 表单 -->
          <div class="login-form login-item">
-            <p class="login-title">朝夕后台管理系统2233</p>
+            <p class="login-title">朝夕后台管理系统</p>
 
             <el-form :model="temp" :rules="rules" ref="ruleForm" label-width="70px" class="demo-ruleForm">
                <!-- 用户名 -->
