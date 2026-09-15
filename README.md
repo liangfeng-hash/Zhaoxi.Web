@@ -95,6 +95,85 @@ flowchart TB
 | 生产 linux-C | Nginx 托管 + 软链切换 | `deploy-linux.yml`（tag 触发） |
 | 本机 Windows | 同步到 YARP 网关的 `wwwroot`，由网关统一托管前端和 API | `deploy-local.yml` |
 
+## Nginx 反向代理与负载均衡
+
+生产环境的入口是 linux-C 上的 Nginx：静态文件由它直接托管，`/api`、`/auth` 转发到后端集群。
+集群阶段接入了 3 个后端节点，横跨 Linux 和 Windows：
+
+```mermaid
+flowchart LR
+    U[浏览器] -->|HTTPS| N[Nginx · linux-C]
+    N -->|/| S[静态文件<br/>/var/www/vue 软链]
+    N -->|/api| A{{upstream zhaoxi_api<br/>least_conn}}
+    N -->|/auth| H{{upstream zhaoxi_auth<br/>least_conn}}
+    A -->|weight=2| L1[linux-C · Docker 容器]
+    A -->|weight=1| W1[win-A · IIS]
+    A -->|weight=1| W2[win-B · IIS]
+    H -->|weight=2| L2[linux-C · Docker 容器]
+    H -->|weight=1| W3[win-A · IIS]
+    L1 & W1 & W2 & L2 & W3 --> DB[(同一个 SQL Server)]
+```
+
+### 核心配置
+
+```nginx
+# /etc/nginx/conf.d/upstream.conf（http 层）
+upstream zhaoxi_api {
+    zone zhaoxi_api 64k;      # 共享内存，所有 worker 共用失败计数和连接数
+    least_conn;               # 最少连接优先
+
+    server 127.0.0.1:8000     weight=2 max_fails=2 fail_timeout=30s;   # linux-C 本机容器
+    server <win-A 内网 IP>:8000 weight=1 max_fails=2 fail_timeout=30s;
+    server <win-B 内网 IP>:8000 weight=1 max_fails=2 fail_timeout=30s;
+
+    keepalive 32;             # 与后端保持长连接
+}
+
+# /etc/nginx/sites-available/zhaoxi（location 层）
+location /api/ {
+    proxy_pass http://zhaoxi_api;
+    proxy_http_version 1.1;   # keepalive 必须配合 HTTP/1.1
+    proxy_set_header Connection "";
+
+    # 某个节点出错或超时，自动换一台重试，用户无感
+    proxy_next_upstream error timeout http_502 http_503 http_504;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 10s;
+}
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| `least_conn` | 请求耗时差异大时，比默认轮询分配更均衡 |
+| `weight=2` | 本机容器走回环地址，延迟最低，分配双倍流量 |
+| `max_fails=2` `fail_timeout=30s` | 30 秒内失败 2 次就摘除该节点 30 秒，之后放一个请求试探 |
+| `proxy_next_upstream` | 失败请求自动转到下一台，配合上面的被动摘除实现故障转移 |
+
+### 负载均衡的前提：后端无状态
+
+- **统一数据库**：所有节点连同一个 SQL Server，否则请求落到不同节点，查到的数据不一样。
+- **统一 JWT 密钥**：节点 A 签发的 token 必须能在节点 B 验签通过，否则登录后刷新页面就会随机 401。
+- **不在节点本地存状态**：会话信息都放在 token 里，不依赖某台机器的内存。
+
+### 验证方法
+
+```bash
+# 日志里加 $upstream_addr，统计请求实际分到了哪些节点
+sudo tail -200 /var/log/nginx/access.log | grep -oE 'upstream=[0-9.:]+' | sort | uniq -c
+
+# 停掉 win-A 上的 API 后连续请求：应全部成功，日志里能看到先打 win-A 失败、再转到其他节点
+# upstream=10.x.x.x:8000, 127.0.0.1:8000
+```
+
+### 实际踩过的坑
+
+- **开源版 Nginx 没有主动健康检查**：那是商业版 Nginx Plus 的功能。开源版用「`max_fails` 被动摘除 + `proxy_next_upstream` 失败重试」组合，效果已经够用。
+- **故障节点摘不干净**：不加 `zone` 时，每个 worker 进程各自记失败次数，要累计「worker 数 × max_fails」次失败才会全部摘除，日志里能看到请求反复打到已经挂掉的节点。加上 `zone` 共享状态后解决，`least_conn` 的连接数统计也因此变准。
+- **跨机器连不上后端**：安全组放行的源 IP 要填 linux-C 的**内网 IP**，不是公网 IP，因为节点之间走的是内网。
+- **Windows 节点绑定地址**：IIS 站点不能只绑定 `127.0.0.1`，否则只接受本机请求，Nginx 转发过去会被拒绝连接。
+
+> 现状：两台 Windows 节点是云服务器试用机，到期后已下线，目前 upstream 只保留 linux-C 本机节点。配置结构没变，新增节点只需要加一行 `server`。
+
 ## 本地开发
 
 ```bash
